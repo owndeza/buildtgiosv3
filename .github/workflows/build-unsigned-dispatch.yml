@@ -147,6 +147,11 @@ jobs:
 
           def rank(path):
               score = 0
+              # bazel-bin always points at this build's configuration; bazel-out
+              # retains older (including simulator) configurations, so never let
+              # a fallback candidate outrank the fresh product.
+              if path == bazel_bin_ipa:
+                  score += 100
               if os.path.basename(path) == 'Telegram.ipa':
                   score += 10
               if os.sep + 'Telegram' + os.sep in path:
