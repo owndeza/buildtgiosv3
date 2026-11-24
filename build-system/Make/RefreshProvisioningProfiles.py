@@ -53,11 +53,18 @@ def setup_keychain(p12_path, password=''):
     run('security', 'set-key-partition-list', '-S', 'apple-tool:,apple:',
         '-k', KEYCHAIN_PASSWORD, KEYCHAIN_NAME)
 
-    identities = run('security', 'find-identity', '-v', '-p', 'codesigning', KEYCHAIN_NAME)
-    match = re.search(r'^\s*\d+\)\s+[0-9A-Fa-f]{40}\s+"([^"]+)"', identities, re.MULTILINE)
+    # Do not filter with '-p codesigning' or '-v': the fake identity is
+    # self-signed and is intentionally not trusted, but `security cms -S`
+    # can still use it.
+    identities = run('security', 'find-identity', KEYCHAIN_NAME)
+    match = re.search(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})(?:\s+"([^"]+)")?', identities, re.MULTILINE)
     if not match:
-        raise RuntimeError('No codesigning identity found in {}'.format(p12_path))
-    return match.group(1)
+        raise RuntimeError(
+            'No signing identity found in {}. security find-identity output:\n{}'.format(
+                p12_path, identities.strip()
+            )
+        )
+    return match.group(2) or match.group(1)
 
 
 def refresh_profile(path, identity, expiration):
