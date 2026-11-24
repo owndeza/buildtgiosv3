@@ -40,32 +40,6 @@ def run(*arguments, input_data=None, check=True):
     return process.stdout.decode('utf-8', errors='replace')
 
 
-def get_signing_identity(p12_path, password=''):
-    cert_command = subprocess.Popen(
-        ['openssl', 'pkcs12', '-in', p12_path, '-passin', 'pass:' + password, '-nokeys', '-legacy'],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    certificate, _ = cert_command.communicate()
-    if cert_command.returncode != 0:
-        raise RuntimeError('Could not read certificate from {}'.format(p12_path))
-
-    subject_command = subprocess.Popen(
-        ['openssl', 'x509', '-noout', '-subject', '-nameopt', 'oneline,-esc_msb'],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    subject, _ = subject_command.communicate(certificate)
-    if subject_command.returncode != 0:
-        raise RuntimeError('Could not parse certificate from {}'.format(p12_path))
-
-    match = re.search(r'CN\s*=\s*([^,]+)', subject.decode('utf-8', errors='replace'))
-    if not match:
-        raise RuntimeError('No common name found in {}'.format(p12_path))
-    return match.group(1).strip()
-
-
 def setup_keychain(p12_path, password=''):
     run('security', 'delete-keychain', KEYCHAIN_NAME, check=False)
     run('security', 'create-keychain', '-p', KEYCHAIN_PASSWORD, KEYCHAIN_NAME)
@@ -80,8 +54,10 @@ def setup_keychain(p12_path, password=''):
         '-k', KEYCHAIN_PASSWORD, KEYCHAIN_NAME)
 
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', KEYCHAIN_NAME)
-    if not identities.strip():
+    match = re.search(r'^\s*\d+\)\s+[0-9A-Fa-f]{40}\s+"([^"]+)"', identities, re.MULTILINE)
+    if not match:
         raise RuntimeError('No codesigning identity found in {}'.format(p12_path))
+    return match.group(1)
 
 
 def refresh_profile(path, identity, expiration):
@@ -147,8 +123,7 @@ def main():
         print('{} does not exist'.format(args.profilesPath))
         return 1
 
-    setup_keychain(p12_path, args.password)
-    identity = get_signing_identity(p12_path, args.password)
+    identity = setup_keychain(p12_path, args.password)
     try:
         profiles = sorted(
             os.path.join(args.profilesPath, name)
