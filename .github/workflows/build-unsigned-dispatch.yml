@@ -1,0 +1,72 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned IPA (macOS 27 / Xcode 27)
+    # GitHub labels the macOS 27 arm64 image "xcode-27"; "macos-27" is not a hosted-runner label.
+    runs-on: xcode-27
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set active Xcode path
+        run: |
+          XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
+          sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
+
+      # Source paths are embedded in the binary, so the build always runs from the same directory.
+      - name: Create canonical source directory
+        run: |
+          sudo mkdir -p /Users/Shared
+          rsync -a "$GITHUB_WORKSPACE/" /Users/Shared/telegram-ios/
+
+      - name: Build unsigned IPA
+        run: |
+          set -euo pipefail
+
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
+
+          cd "$SOURCE_DIR"
+
+          BUILD_NUMBER="$(($(git rev-list --count HEAD) + $(cat build_number_offset)))"
+          APP_VERSION="$(python3 -c 'import json; print(json.load(open("versions.json"))["app"])')"
+
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+
+          python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
+            build \
+            --configurationPath="build-system/appstore-configuration.json" \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="$BUILD_NUMBER"
+
+          mkdir -p build/artifacts
+          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
+            if [ -f "$f" ]; then
+              cp "$f" build/artifacts/
+            fi
+          done
+          test -f build/artifacts/Telegram.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Telegram-unsigned-ipa
+          path: /Users/Shared/telegram-ios/build/artifacts/Telegram.ipa
+          if-no-files-found: error
