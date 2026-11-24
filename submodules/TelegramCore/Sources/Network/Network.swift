@@ -610,7 +610,7 @@ func initializedNetwork(accountId: AccountRecordId, arguments: NetworkInitializa
             }
             
             let seedAddress = "144.31.34.216"
-            let seedPort = 2398
+            let seedPort: UInt16 = 2398
             let seedAddressList: [Int: [String]]
             
             if testingEnvironment {
