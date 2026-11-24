@@ -32,6 +32,16 @@ jobs:
           sudo mkdir -p /Users/Shared
           rsync -a "$GITHUB_WORKSPACE/" /Users/Shared/telegram-ios/
 
+      # The fake profiles checked into the repository expired on 2026-10-30;
+      # rules_apple rejects them before codesigning unless ExpirationDate is in the future.
+      - name: Refresh fake provisioning profiles
+        run: |
+          set -euo pipefail
+          cd /Users/Shared/telegram-ios
+          python3 build-system/Make/RefreshProvisioningProfiles.py \
+            --profilesPath build-system/fake-codesigning/profiles \
+            --certsPath build-system/fake-codesigning/certs
+
       - name: Build unsigned IPA
         run: |
           set -euo pipefail
