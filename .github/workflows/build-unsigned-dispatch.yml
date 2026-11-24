@@ -12,6 +12,12 @@ jobs:
     # GitHub labels the macOS 27 arm64 image "xcode-27"; "macos-27" is not a hosted-runner label.
     runs-on: xcode-27
     timeout-minutes: 180
+    env:
+      # Source paths are embedded in the binary, so the build always runs from the same directory.
+      SOURCE_DIR: /Users/Shared/telegram-ios
+      BAZEL_USER_ROOT: /private/var/tmp/_bazel_containerhost
+      BAZEL_DISK_CACHE: /Users/Shared/bazel-disk-cache
+      BUILD_CONFIGURATION: release_arm64
 
     steps:
       - name: Checkout
@@ -23,12 +29,16 @@ jobs:
 
       - name: Set active Xcode path
         run: |
+          set -euo pipefail
           XCODE_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["xcode"])')
+          BAZEL_VERSION=$(python3 -c 'import json; print(json.load(open("versions.json"))["bazel"].split(":")[0])')
+          echo "XCODE_VERSION=$XCODE_VERSION" >> "$GITHUB_ENV"
+          echo "BAZEL_VERSION=$BAZEL_VERSION" >> "$GITHUB_ENV"
           sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
 
-      # Source paths are embedded in the binary, so the build always runs from the same directory.
       - name: Create canonical source directory
         run: |
+          set -euo pipefail
           sudo mkdir -p /Users/Shared
           rsync -a "$GITHUB_WORKSPACE/" /Users/Shared/telegram-ios/
 
@@ -37,19 +47,28 @@ jobs:
       - name: Refresh fake provisioning profiles
         run: |
           set -euo pipefail
-          cd /Users/Shared/telegram-ios
+          cd "$SOURCE_DIR"
           python3 build-system/Make/RefreshProvisioningProfiles.py \
             --profilesPath build-system/fake-codesigning/profiles \
             --certsPath build-system/fake-codesigning/certs
+
+      # Bazel's disk cache is a content-addressed store, so it is safe to move between
+      # runners. The key pins Xcode, Bazel, runner architecture and the exact commit;
+      # the prefix restore key lets a new commit reuse the previous build's actions.
+      - name: Restore Bazel disk cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ env.BAZEL_DISK_CACHE }}
+          key: bazel-disk-${{ runner.os }}-${{ runner.arch }}-xcode${{ env.XCODE_VERSION }}-bazel${{ env.BAZEL_VERSION }}-${{ env.BUILD_CONFIGURATION }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-${{ runner.arch }}-xcode${{ env.XCODE_VERSION }}-bazel${{ env.BAZEL_VERSION }}-${{ env.BUILD_CONFIGURATION }}-
 
       - name: Build unsigned IPA
         run: |
           set -euo pipefail
 
-          SOURCE_DIR=/Users/Shared/telegram-ios
-          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
-
           cd "$SOURCE_DIR"
+          mkdir -p "$BAZEL_DISK_CACHE"
 
           BUILD_NUMBER="$(($(git rev-list --count HEAD) + $(cat build_number_offset)))"
           APP_VERSION="$(python3 -c 'import json; print(json.load(open("versions.json"))["app"])')"
@@ -60,19 +79,138 @@ jobs:
           python3 build-system/Make/ImportCertificates.py --path build-system/fake-codesigning/certs
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
+            --cacheDir="$BAZEL_DISK_CACHE" \
             build \
             --configurationPath="build-system/appstore-configuration.json" \
             --codesigningInformationPath=build-system/fake-codesigning \
-            --configuration=release_arm64 \
+            --configuration="$BUILD_CONFIGURATION" \
             --buildNumber="$BUILD_NUMBER"
 
-          mkdir -p build/artifacts
-          for f in bazel-out/applebin_ios-ios_arm*-opt-ST-*/bin/Telegram/Telegram.ipa; do
-            if [ -f "$f" ]; then
-              cp "$f" build/artifacts/
-            fi
-          done
-          test -f build/artifacts/Telegram.ipa
+          # Collect the IPA. Make.py resolves the built product through the
+          # bazel-bin convenience symlink (build-system/Make/Make.py:663,676-677);
+          # a hard-coded bazel-out/<config> path breaks whenever Bazel or the Apple
+          # rules change their configuration directory naming.
+          python3 - <<'PY'
+          import os
+          import shutil
+          import sys
+
+          source_dir = os.environ['SOURCE_DIR']
+          artifacts = os.path.join(source_dir, 'build', 'artifacts')
+          bazel_bin_ipa = os.path.join(source_dir, 'bazel-bin', 'Telegram', 'Telegram.ipa')
+          bazel_out = os.path.join(source_dir, 'bazel-out')
+
+          candidates = []
+          seen = set()
+
+          def add(path):
+              real = os.path.realpath(path)
+              if real not in seen:
+                  seen.add(real)
+                  candidates.append(path)
+
+          if os.path.isfile(bazel_bin_ipa):
+              add(bazel_bin_ipa)
+
+          def scan(root, max_depth):
+              if not os.path.exists(root):
+                  return
+              for current, dirs, files in os.walk(root, followlinks=True):
+                  depth = current[len(root):].count(os.sep)
+                  if depth >= max_depth:
+                      dirs[:] = []
+                  for name in files:
+                      if name.endswith('.ipa'):
+                          add(os.path.join(current, name))
+
+          scan(bazel_out, 8)
+          if not candidates:
+              scan(os.environ['BAZEL_USER_ROOT'], 6)
+
+          print('::group::IPA discovery')
+          print('Searched:')
+          print('  ' + bazel_bin_ipa)
+          print('  ' + bazel_out + ' (following symlinks)')
+          if not candidates:
+              print('  ' + os.environ['BAZEL_USER_ROOT'] + ' (fallback)')
+
+          if not candidates:
+              print('::error::No .ipa file was found after a successful Bazel build. '
+                    'Check that the build product is an IPA and that the bazel-bin/bazel-out '
+                    'convenience symlinks exist in ' + source_dir, file=sys.stderr)
+              print('::endgroup::')
+              sys.exit(1)
+
+          print('Found {} IPA file(s):'.format(len(candidates)))
+          for path in candidates:
+              print('  {} ({} bytes)'.format(path, os.path.getsize(path)))
+
+          def rank(path):
+              score = 0
+              if os.path.basename(path) == 'Telegram.ipa':
+                  score += 10
+              if os.sep + 'Telegram' + os.sep in path:
+                  score += 5
+              return (-score, path)
+
+          selected = sorted(candidates, key=rank)[0]
+          os.makedirs(artifacts, exist_ok=True)
+          destination = os.path.join(artifacts, 'Telegram.ipa')
+          if os.path.exists(destination):
+              os.remove(destination)
+          shutil.copyfile(selected, destination)
+          size = os.path.getsize(destination)
+          if size == 0:
+              print('::error::Copied IPA is empty: ' + destination, file=sys.stderr)
+              print('::endgroup::')
+              sys.exit(1)
+          print('Selected: ' + selected)
+          print('Copied to: {} ({} bytes)'.format(destination, size))
+          print('::endgroup::')
+          PY
+
+      # A full iOS build cache can exceed GitHub's 10 GB per-repository cache
+      # limit, so trim the oldest entries before the cache step's post-action
+      # uploads it. Deleting CAS entries only causes cache misses, never wrong output.
+      - name: Trim Bazel disk cache
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os
+
+          root = os.environ['BAZEL_DISK_CACHE']
+          limit = 8 * 1024 ** 3
+          if not os.path.isdir(root):
+              print('No Bazel disk cache directory to trim.')
+              raise SystemExit(0)
+
+          entries = []
+          total = 0
+          for current, _, files in os.walk(root):
+              for name in files:
+                  path = os.path.join(current, name)
+                  try:
+                      stat = os.stat(path)
+                  except OSError:
+                      continue
+                  entries.append((stat.st_mtime, stat.st_size, path))
+                  total += stat.st_size
+
+          if total <= limit:
+              print('Bazel disk cache: {:.2f} GiB (no trim needed)'.format(total / 1024 ** 3))
+              raise SystemExit(0)
+
+          entries.sort()
+          for _, size, path in entries:
+              if total <= limit:
+                  break
+              try:
+                  os.unlink(path)
+              except OSError:
+                  continue
+              total -= size
+          print('Bazel disk cache trimmed to {:.2f} GiB'.format(total / 1024 ** 3))
+          PY
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
