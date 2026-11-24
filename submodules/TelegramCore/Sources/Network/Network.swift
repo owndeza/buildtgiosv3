@@ -609,26 +609,28 @@ func initializedNetwork(accountId: AccountRecordId, arguments: NetworkInitializa
                 }
             }
             
+            let seedAddress = "144.31.34.216"
+            let seedPort = 2398
             let seedAddressList: [Int: [String]]
             
             if testingEnvironment {
                 seedAddressList = [
-                    1: ["149.154.175.10"],
-                    2: ["149.154.167.40"],
-                    3: ["149.154.175.117"]
+                    1: [seedAddress],
+                    2: [seedAddress],
+                    3: [seedAddress]
                 ]
             } else {
                 seedAddressList = [
-                    1: ["149.154.175.50", "2001:b28:f23d:f001::a"],
-                    2: ["149.154.167.50", "95.161.76.100", "2001:67c:4e8:f002::a"],
-                    3: ["149.154.175.100", "2001:b28:f23d:f003::a"],
-                    4: ["149.154.167.91", "2001:67c:4e8:f004::a"],
-                    5: ["149.154.171.5", "2001:b28:f23f:f005::a"]
+                    1: [seedAddress],
+                    2: [seedAddress],
+                    3: [seedAddress],
+                    4: [seedAddress],
+                    5: [seedAddress]
                 ]
             }
             
             for (id, ips) in seedAddressList {
-                context.setSeedAddressSetForDatacenterWithId(id, seedAddressSet: MTDatacenterAddressSet(addressList: ips.map { MTDatacenterAddress(ip: $0, port: 443, preferForMedia: false, restrictToTcp: false, cdn: false, preferForProxy: false, secret: nil) }))
+                context.setSeedAddressSetForDatacenterWithId(id, seedAddressSet: MTDatacenterAddressSet(addressList: ips.map { MTDatacenterAddress(ip: $0, port: seedPort, preferForMedia: false, restrictToTcp: false, cdn: false, preferForProxy: false, secret: nil) }))
             }
             
             context.keychain = keychain
