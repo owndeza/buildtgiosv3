@@ -139,24 +139,24 @@ def main():
     parser.add_argument('--password', default='', help='Password of SelfSigned.p12')
     args = parser.parse_args()
 
-    p12_path = os.path.join(args.certs_path, 'SelfSigned.p12')
+    p12_path = os.path.join(args.certsPath, 'SelfSigned.p12')
     if not os.path.exists(p12_path):
         print('{} does not exist'.format(p12_path))
         return 1
-    if not os.path.isdir(args.profiles_path):
-        print('{} does not exist'.format(args.profiles_path))
+    if not os.path.isdir(args.profilesPath):
+        print('{} does not exist'.format(args.profilesPath))
         return 1
 
     setup_keychain(p12_path, args.password)
     identity = get_signing_identity(p12_path, args.password)
     try:
         profiles = sorted(
-            os.path.join(args.profiles_path, name)
-            for name in os.listdir(args.profiles_path)
+            os.path.join(args.profilesPath, name)
+            for name in os.listdir(args.profilesPath)
             if name.endswith('.mobileprovision')
         )
         if not profiles:
-            print('No provisioning profiles found in {}'.format(args.profiles_path))
+            print('No provisioning profiles found in {}'.format(args.profilesPath))
             return 1
         for profile_path in profiles:
             refresh_profile(profile_path, identity, DEFAULT_EXPIRATION)
