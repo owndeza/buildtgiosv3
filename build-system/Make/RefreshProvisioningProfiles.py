@@ -18,7 +18,8 @@ import subprocess
 import sys
 import tempfile
 
-DEFAULT_EXPIRATION = datetime.datetime(2099, 12, 31, 23, 59, 59, tzinfo=datetime.timezone.utc)
+# plistlib serializes datetimes as UTC but reads them back as naive datetimes.
+DEFAULT_EXPIRATION = datetime.datetime(2099, 12, 31, 23, 59, 59)
 KEYCHAIN_NAME = 'refresh-profiles-temp.keychain'
 KEYCHAIN_PASSWORD = 'temp123'
 
@@ -38,6 +39,13 @@ def run(*arguments, input_data=None, check=True):
             )
         )
     return process.stdout.decode('utf-8', errors='replace')
+
+
+def naive_utc(value):
+    """Normalize a plist date to the naive UTC datetime plistlib returns."""
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        return value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def setup_keychain(p12_path, password=''):
@@ -82,6 +90,7 @@ def refresh_profile(path, identity, expiration):
 
     profile = plistlib.loads(decoded.stdout)
     previous = profile.get('ExpirationDate')
+    expiration = naive_utc(expiration)
     profile['ExpirationDate'] = expiration
     # A stale embedded signature copy would describe the old plist.
     profile.pop('DER-Encoded-Profile', None)
@@ -100,8 +109,19 @@ def refresh_profile(path, identity, expiration):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        if check.returncode != 0 or plistlib.loads(check.stdout).get('ExpirationDate') != expiration:
-            raise RuntimeError('Verification failed for {}'.format(path))
+        if check.returncode != 0:
+            raise RuntimeError(
+                'Could not decode signed profile {}: {}'.format(
+                    path, check.stderr.decode('utf-8', errors='replace').strip()
+                )
+            )
+        actual_expiration = plistlib.loads(check.stdout).get('ExpirationDate')
+        if naive_utc(actual_expiration) != expiration:
+            raise RuntimeError(
+                'Verification failed for {}: expected ExpirationDate {!r}, got {!r}'.format(
+                    path, expiration, actual_expiration
+                )
+            )
         os.replace(output_path, path)
     finally:
         for temporary_path in (plist_path, output_path):
