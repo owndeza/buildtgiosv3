@@ -11,7 +11,7 @@ jobs:
     name: Build unsigned IPA (macOS 27 / Xcode 27)
     # GitHub labels the macOS 27 arm64 image "xcode-27"; "macos-27" is not a hosted-runner label.
     runs-on: xcode-27
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
