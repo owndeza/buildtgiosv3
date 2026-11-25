@@ -2963,12 +2963,13 @@ final class PeerInfoHeaderNode: ASDisplayNode {
             }
         }
         
-        if let result = self.buttonsContainerNode.view.hitTest(self.view.convert(point, to: self.buttonsContainerNode.view), with: event) {
-            return result
-        }
-        
+        // The cover accepts only visible bubble circles; empty space still reaches the controls.
         if let giftsCoverView = self.giftsCover.view, giftsCoverView.alpha > 0.0, giftsCoverView.point(inside: self.view.convert(point, to: giftsCoverView), with: event) {
             return giftsCoverView
+        }
+
+        if let result = self.buttonsContainerNode.view.hitTest(self.view.convert(point, to: self.buttonsContainerNode.view), with: event) {
+            return result
         }
         
         if let balanceView = self.walletBalance?.view, let result = balanceView.hitTest(self.view.convert(point, to: balanceView), with: event) {

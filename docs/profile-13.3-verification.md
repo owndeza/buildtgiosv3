@@ -29,3 +29,21 @@ Track both shell and gift on a drag/release crop. Inspect every flagged gap/jump
 - `git diff --check`: passed.
 - Inspected the music event path from MediaPlayerAudioRenderer through SharedMediaPlayer and MediaManager; music previously returned a never-emitting signal.
 - These checks do not establish Swift compilation or visual correctness.
+
+## Bubble motion correction after device feedback
+
+The user reported static and non-draggable bubbles in the first build. Screenshots establish appearance only; they do not establish animation timing.
+
+Before recording the correction, expect:
+
+- The existing bubbles retain their artwork, size, colors, number and starting anchors. They follow bounded, smooth trajectories (at most 7 pt horizontal / 5 pt vertical), with stable variation in depth and periods of 8–11 seconds. This is floating around the existing anchors, not a full revolution around the avatar.
+- The same layers keep moving while the profile stands still and while scrolling updates their base positions. The motion phase must not reset at scroll start/end or at the loop seam.
+- A pan captures the bubble at touch-down, moves the whole shell/gift together, and returns with a continuous hand-over to the current floating phase. Empty space passes through to the profile. Buttons must remain usable.
+- Rotation preserves layer identity and the number of displayed bubbles, adapting existing anchors to the new content width. No gift should fade out and be recreated solely because of resizing.
+- Reduce Motion holds the current offset without a snap. Disabling it resumes from that phase. Leaving/re-entering the window and app suspension should also preserve phase.
+
+Code changes replace the existing hover animation with compositor-driven transform translation and replace helper-layer hierarchy notifications with UIView window/app lifecycle handling. CALayer presentation copies now use super.init(layer:) and do not instantiate extra sticker renderers. Transparent backing contents provide the touch surface required by the documented iOS 27 behavior. Bubble hit testing precedes the buttons' container and uses the presentation geometry.
+
+Added iOS regression target: //submodules/TelegramUI/Components/PeerInfo/PeerInfoCoverComponent:PeerInfoCoverComponentTests. It checks nonzero motion, bounded displacement, loop position/velocity continuity and depth variation. It still requires execution on the Mac; numerical tests cannot verify actual compositing or touch delivery.
+
+Record at least 24 seconds stationary, then scroll, drag/release, rotate, toggle Reduce Motion, and background/foreground. Track the gift and rim separately on the sheets; inspect the loop boundaries and drag hand-over for jumps. Device/simulator recording and Swift compilation remain outstanding in this Windows session. Do not label the fix visually verified until frame evidence is appended.
