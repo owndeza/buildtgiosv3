@@ -1004,7 +1004,12 @@ final class PeerInfoPaneContainerNode: ASDisplayNode, ASGestureRecognizerDelegat
             }
         }
         
-        self.backgroundColor = backgroundColor
+        if let status = data?.peer?.emojiStatus, case .starGift = status.content,
+           (data?.cachedData as? CachedUserData)?.isSuspiciousPeer != true {
+            self.backgroundColor = .clear
+        } else {
+            self.backgroundColor = backgroundColor
+        }
 
         let isScrollingLockedAtTop = expansionFraction < 1.0 - CGFloat.ulpOfOne
 

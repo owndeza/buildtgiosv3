@@ -651,7 +651,17 @@ public final class MediaManagerImpl: NSObject, MediaManager {
                     }
                 }
             case .music, .file:
-                return .never()
+                return self.musicMediaPlayerStateValue.get()
+                |> deliverOnMainQueue
+                |> mapToSignal { [weak self] value -> Signal<Float, NoError> in
+                    guard let self, let (account, playback, _) = value,
+                          account.id == accountId, case let .state(state) = playback,
+                          state.playlistId.isEqual(to: playlistId), state.item.id.isEqual(to: itemId),
+                          let player = self.musicMediaPlayer else {
+                        return .never()
+                    }
+                    return player.audioLevel
+                }
         }
     }
     

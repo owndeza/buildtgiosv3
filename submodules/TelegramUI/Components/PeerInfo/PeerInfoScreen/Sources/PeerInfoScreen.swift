@@ -264,6 +264,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
     let scrollNode: PeerInfoScrollNode
     let edgeEffectView: EdgeEffectView
     
+    private var giftBackgroundView: ProfileGiftBackgroundView?
     let headerNode: PeerInfoHeaderNode
     var underHeaderContentsAlpha: CGFloat = 1.0
     var regularSections: [AnyHashable: PeerInfoScreenItemSectionContainerNode] = [:]
@@ -6081,6 +6082,24 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
     }
     
     private func updateBackgroundColor() {
+        if !self.isSettings, let status = self.data?.peer?.emojiStatus, case .starGift = status.content,
+           (self.data?.cachedData as? CachedUserData)?.isSuspiciousPeer != true,
+           let layout = self.validLayout?.0, self.expansionBackgroundView == nil {
+            let background: ProfileGiftBackgroundView
+            if let current = self.giftBackgroundView {
+                background = current
+            } else {
+                background = ProfileGiftBackgroundView(context: self.context)
+                self.giftBackgroundView = background
+                self.view.insertSubview(background, at: 0)
+            }
+            background.frame = CGRect(origin: .zero, size: layout.size)
+            let music = self.data.flatMap { self.headerNode.profileMusic(peer: $0.peer, screenData: $0) }
+            background.update(status: status, isDark: self.presentationData.theme.overallDarkAppearance, musicFileId: music?.fileId.id)
+        } else if let background = self.giftBackgroundView {
+            background.removeFromSuperview()
+            self.giftBackgroundView = nil
+        }
         let color: UIColor
         if self.paneContainerNode.currentPaneKey == .gifts {
             color = self.presentationData.theme.list.blocksBackgroundColor

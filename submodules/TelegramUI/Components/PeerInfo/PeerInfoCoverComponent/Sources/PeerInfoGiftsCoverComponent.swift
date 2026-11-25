@@ -118,7 +118,7 @@ public final class PeerInfoGiftsCoverComponent: Component {
         return true
     }
     
-    public final class View: UIView {
+    public final class View: UIView, UIGestureRecognizerDelegate {
         private var currentSize: CGSize?
         private var component: PeerInfoGiftsCoverComponent?
         private var state: EmptyComponentState?
@@ -135,6 +135,73 @@ public final class PeerInfoGiftsCoverComponent: Component {
         private var isCurrentlyInHierarchy = false
         
         private var isUpdating = false
+        private weak var draggedLayer: GiftIconLayer?
+        private var dragOrigin = CGPoint.zero
+        private var dragRestPosition = CGPoint.zero
+
+        private func gift(at point: CGPoint) -> GiftIconLayer? {
+            return self.iconLayers.values.reversed().first { layer in
+                let visible = layer.presentation() ?? layer
+                return visible.opacity > 0.1 && visible.frame.insetBy(dx: -6.0, dy: -6.0).contains(point)
+            }
+        }
+
+        public override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            return self.gift(at: gestureRecognizer.location(in: self)) != nil
+        }
+
+        public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            return gestureRecognizer is UIPanGestureRecognizer && otherGestureRecognizer.view is UIScrollView
+        }
+
+        @objc private func panned(_ gesture: UIPanGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                guard let layer = self.gift(at: gesture.location(in: self)) else { return }
+                self.draggedLayer = layer
+                self.dragRestPosition = layer.position
+                self.dragOrigin = layer.presentation()?.position ?? layer.position
+                layer.stopAnimations()
+                layer.removeAnimation(forKey: "position")
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.position = self.dragOrigin
+                CATransaction.commit()
+                layer.zPosition = 10.0
+            case .changed:
+                guard let layer = self.draggedLayer, let component = self.component else { return }
+                let translation = gesture.translation(in: self)
+                let radius = layer.bounds.width * 0.6
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.position = CGPoint(
+                    x: max(component.sideInsets.stripLeft + radius, min(self.bounds.width - component.sideInsets.stripRight - radius, self.dragOrigin.x + translation.x)),
+                    y: max(component.statusBarHeight + radius, min(self.bounds.height - radius, self.dragOrigin.y + translation.y))
+                )
+                CATransaction.commit()
+            case .ended, .cancelled, .failed:
+                self.finishDragging()
+            default:
+                break
+            }
+        }
+
+        private func finishDragging() {
+            guard let layer = self.draggedLayer else { return }
+            self.draggedLayer = nil
+            let position = layer.position
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.position = self.dragRestPosition
+            layer.zPosition = 0.0
+            CATransaction.commit()
+            if self.isCurrentlyInHierarchy {
+                layer.startAnimations(index: 0)
+            }
+            // The additive orbit starts seven points to the right of the resting center.
+            let orbitOffset: CGFloat = self.isCurrentlyInHierarchy && !UIAccessibility.isReduceMotionEnabled ? 7.0 : 0.0
+            layer.animatePosition(from: CGPoint(x: position.x - orbitOffset, y: position.y), to: self.dragRestPosition, duration: UIAccessibility.isReduceMotionEnabled ? 0.2 : 0.65, timingFunction: UIAccessibility.isReduceMotionEnabled ? CAMediaTimingFunctionName.easeOut.rawValue : kCAMediaTimingFunctionSpring)
+        }
         
         override public init(frame: CGRect) {
             super.init(frame: frame)
@@ -156,9 +223,18 @@ public final class PeerInfoGiftsCoverComponent: Component {
                     return
                 }
                 self.isCurrentlyInHierarchy = false
+                self.finishDragging()
+                self.updateAnimations()
             }
             
-            self.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.tapped(_:))))
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(self.panned(_:)))
+            pan.maximumNumberOfTouches = 1
+            pan.delegate = self
+            self.addGestureRecognizer(pan)
+            let tap = UITapGestureRecognizer(target: self, action: #selector(self.tapped(_:)))
+            tap.require(toFail: pan)
+            self.addGestureRecognizer(tap)
+            NotificationCenter.default.addObserver(self, selector: #selector(self.motionPreferenceChanged), name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
         }
         
         required public init?(coder aDecoder: NSCoder) {
@@ -167,6 +243,7 @@ public final class PeerInfoGiftsCoverComponent: Component {
         
         deinit {
             self.giftsDisposable?.dispose()
+            NotificationCenter.default.removeObserver(self)
         }
         
         @objc private func tapped(_ gestureRecognizer: UITapGestureRecognizer) {
@@ -174,11 +251,8 @@ public final class PeerInfoGiftsCoverComponent: Component {
                 return
             }
             let location = gestureRecognizer.location(in: self)
-            for (_, iconLayer) in self.iconLayers {
-                if iconLayer.frame.contains(location) {
-                    component.action(iconLayer.gift)
-                    break
-                }
+            if let layer = self.gift(at: location) {
+                component.action(layer.gift)
             }
         }
         
@@ -208,7 +282,7 @@ public final class PeerInfoGiftsCoverComponent: Component {
                     }
                     element.accessibilityLabel = "\(gift.title) #\(formatCollectibleNumber(gift.number, dateTimeFormat: dateTimeFormat))"
                     element.accessibilityTraits = .button
-                    element.accessibilityFrameInContainerSpace = iconLayer.frame
+                    element.accessibilityFrameInContainerSpace = (iconLayer.presentation() ?? iconLayer).frame
                     let starGift = iconLayer.gift
                     element.activate = { [weak self] in
                         guard let self, let component = self.component else {
@@ -234,19 +308,20 @@ public final class PeerInfoGiftsCoverComponent: Component {
         }
         
         public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-            for (_, iconLayer) in self.iconLayers {
-                if iconLayer.frame.contains(point) {
-                    return true
-                }
-            }
-            return false
+            return self.gift(at: point) != nil
+        }
+
+        @objc private func motionPreferenceChanged() {
+            self.updateAnimations()
         }
         
         func updateAnimations() {
             var index = 0
             for (_, iconLayer) in self.iconLayers {
-                if self.isCurrentlyInHierarchy {
+                if self.isCurrentlyInHierarchy && !UIAccessibility.isReduceMotionEnabled {
                     iconLayer.startAnimations(index: index)
+                } else {
+                    iconLayer.stopAnimations()
                 }
                 index += 1
             }
@@ -268,6 +343,9 @@ public final class PeerInfoGiftsCoverComponent: Component {
             
             for (_, layer) in self.iconLayers {
                 layer.opacity = 1.0
+                if UIAccessibility.isReduceMotionEnabled {
+                    continue
+                }
                 layer.animatePosition(
                     from: component.avatarCenter,
                     to: layer.position,
@@ -290,7 +368,7 @@ public final class PeerInfoGiftsCoverComponent: Component {
             let previousCurrentSize = self.currentSize
             self.currentSize = availableSize
                     
-            let iconSize = CGSize(width: 32.0, height: 32.0)
+            let iconSize = CGSize(width: 58.0, height: 58.0)
             
             let giftIds = self.gifts.map { gift in
                 if case let .unique(gift) = gift.gift {
@@ -306,7 +384,7 @@ public final class PeerInfoGiftsCoverComponent: Component {
                     avatarCenter.y = component.statusBarHeight + 75.0
                 }
                 
-                var excludeRects: [CGRect] = []
+                var excludeRects: [CGRect] = [component.avatarSize.centered(around: avatarCenter).insetBy(dx: -8.0, dy: -8.0)]
                 if component.statusBarHeight > 0.0 {
                     excludeRects.append(CGRect(origin: .zero, size: CGSize(width: availableSize.width, height: component.statusBarHeight + 4.0)))
                 }
@@ -320,12 +398,12 @@ public final class PeerInfoGiftsCoverComponent: Component {
                     containerSize: CGSize(width: availableSize.width, height: component.defaultHeight),
                     centerFrame: component.avatarSize.centered(around: avatarCenter),
                     exclusionZones: excludeRects,
-                    minimumDistance: 42.0,
-                    edgePadding: 5.0,
+                    minimumDistance: 70.0,
+                    edgePadding: 14.0,
                     seed: self.seed
                 )
                 
-                self.iconPositions = positionGenerator.generatePositions(count: 12, itemSize: iconSize)
+                self.iconPositions = positionGenerator.generatePositions(count: min(6, giftIds.count), itemSize: CGSize(width: 76.0, height: 76.0))
             }
             self.appliedGiftIds = giftIds
             
@@ -364,7 +442,7 @@ public final class PeerInfoGiftsCoverComponent: Component {
                                                                           
             var validIds = Set<AnyHashable>()
             var index = 0
-            for gift in self.gifts.prefix(12) {
+            for gift in self.gifts.prefix(6) {
                 guard index < self.iconPositions.count else {
                     break
                 }
@@ -394,7 +472,9 @@ public final class PeerInfoGiftsCoverComponent: Component {
                         iconLayer.animateScale(from: 0.01, to: 1.0, duration: 0.2)
                     }
                     
-                    iconLayer.startAnimations(index: index)
+                    if self.isCurrentlyInHierarchy {
+                        iconLayer.startAnimations(index: index)
+                    }
                 }
                 iconLayer.glowing = component.hasBackground
                 
@@ -418,7 +498,11 @@ public final class PeerInfoGiftsCoverComponent: Component {
                 let absolutePosition = getAbsolutePosition(position: effectivePosition, centerPoint: component.avatarCenter)
                                 
                 iconTransition.setBounds(layer: iconLayer, bounds: CGRect(origin: .zero, size: iconSize))
-                iconTransition.setPosition(layer: iconLayer, position: absolutePosition)
+                if self.draggedLayer === iconLayer {
+                    self.dragRestPosition = absolutePosition
+                } else {
+                    iconTransition.setPosition(layer: iconLayer, position: absolutePosition)
+                }
                 iconLayer.updateRotation(effectiveAngle, transition: iconTransition)
                 iconTransition.setScale(layer: iconLayer, scale: iconPosition.scale * (1.0 - itemScaleFraction))
                 
@@ -549,6 +633,8 @@ private class GiftIconLayer: SimpleLayer {
         }
     }
     
+    private let bubbleLayer = CAGradientLayer()
+    private let rimLayer = CAShapeLayer()
     let shadowLayer = SimpleLayer()
     let starsLayer = StarsEffectLayer()
     let animationLayer: InlineStickerItemLayer
@@ -613,6 +699,18 @@ private class GiftIconLayer: SimpleLayer {
         self.starsLayer.frame = starsFrame
         self.starsLayer.update(color: glowing ? .white : color, size: starsFrame.size)
         
+        self.bubbleLayer.colors = [UIColor.white.withAlphaComponent(0.38).cgColor, UIColor.white.withAlphaComponent(0.06).cgColor, UIColor(red: 0.65, green: 0.79, blue: 0.93, alpha: 0.24).cgColor]
+        self.bubbleLayer.locations = [0.0, 0.45, 1.0]
+        self.bubbleLayer.startPoint = CGPoint(x: 0.1, y: 0.0)
+        self.bubbleLayer.endPoint = CGPoint(x: 0.9, y: 1.0)
+        self.bubbleLayer.borderWidth = 0.75
+        self.bubbleLayer.borderColor = UIColor.white.withAlphaComponent(0.3).cgColor
+        self.rimLayer.strokeColor = UIColor.white.withAlphaComponent(0.65).cgColor
+        self.rimLayer.fillColor = UIColor.clear.cgColor
+        self.rimLayer.lineWidth = 1.2
+        self.rimLayer.lineCap = .round
+        self.addSublayer(self.bubbleLayer)
+        self.addSublayer(self.rimLayer)
         self.addSublayer(self.shadowLayer)
         self.addSublayer(self.starsLayer)
         self.addSublayer(self.animationLayer)
@@ -674,6 +772,18 @@ private class GiftIconLayer: SimpleLayer {
         self.starsLayer.frame = starsFrame
         self.starsLayer.update(color: glowing ? .white : color, size: starsFrame.size)
         
+        self.bubbleLayer.colors = [UIColor.white.withAlphaComponent(0.38).cgColor, UIColor.white.withAlphaComponent(0.06).cgColor, UIColor(red: 0.65, green: 0.79, blue: 0.93, alpha: 0.24).cgColor]
+        self.bubbleLayer.locations = [0.0, 0.45, 1.0]
+        self.bubbleLayer.startPoint = CGPoint(x: 0.1, y: 0.0)
+        self.bubbleLayer.endPoint = CGPoint(x: 0.9, y: 1.0)
+        self.bubbleLayer.borderWidth = 0.75
+        self.bubbleLayer.borderColor = UIColor.white.withAlphaComponent(0.3).cgColor
+        self.rimLayer.strokeColor = UIColor.white.withAlphaComponent(0.65).cgColor
+        self.rimLayer.fillColor = UIColor.clear.cgColor
+        self.rimLayer.lineWidth = 1.2
+        self.rimLayer.lineCap = .round
+        self.addSublayer(self.bubbleLayer)
+        self.addSublayer(self.rimLayer)
         self.addSublayer(self.shadowLayer)
         self.addSublayer(self.starsLayer)
         self.addSublayer(self.animationLayer)
@@ -685,7 +795,11 @@ private class GiftIconLayer: SimpleLayer {
     
     override func layoutSublayers() {
         self.shadowLayer.frame = CGRect(origin: .zero, size: self.bounds.size).insetBy(dx: -8.0, dy: -8.0)
-        self.animationLayer.bounds = CGRect(origin: .zero, size: self.bounds.size)
+        self.bubbleLayer.frame = self.bounds
+        self.bubbleLayer.cornerRadius = self.bounds.width / 2.0
+        self.rimLayer.frame = self.bounds
+        self.rimLayer.path = UIBezierPath(arcCenter: CGPoint(x: self.bounds.midX, y: self.bounds.midY), radius: max(0.0, self.bounds.width / 2.0 - 3.0), startAngle: .pi * 1.08, endAngle: .pi * 1.62, clockwise: true).cgPath
+        self.animationLayer.bounds = CGRect(origin: .zero, size: CGSize(width: self.bounds.width * 0.68, height: self.bounds.height * 0.68))
         self.animationLayer.position = CGPoint(x: self.bounds.width / 2.0, y: self.bounds.height / 2.0)
     }
     
@@ -693,26 +807,31 @@ private class GiftIconLayer: SimpleLayer {
         self.animationLayer.transform = CATransform3DMakeRotation(angle, 0.0, 0.0, 1.0)
     }
     
+    func stopAnimations() {
+        self.starsLayer.isHidden = true
+        self.removeAnimation(forKey: "hover")
+        self.animationLayer.removeAnimation(forKey: "wiggle")
+        self.shadowLayer.removeAnimation(forKey: "glow")
+    }
+
     func startAnimations(index: Int) {
-        let beginTime = Double(index) * 1.5
-        
-        if self.animation(forKey: "hover") == nil {
-            let upDistance = CGFloat.random(in: 1.0 ..< 2.0)
-            let downDistance = CGFloat.random(in: 1.0 ..< 2.0)
-            let hoverDuration = TimeInterval.random(in: 3.5 ..< 4.5)
-            
-            let hoverAnimation = CABasicAnimation(keyPath: "transform.translation.y")
-            hoverAnimation.duration = hoverDuration
-            hoverAnimation.fromValue = -upDistance
-            hoverAnimation.toValue = downDistance
-            hoverAnimation.autoreverses = true
-            hoverAnimation.repeatCount = .infinity
-            hoverAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            hoverAnimation.beginTime = beginTime
-            hoverAnimation.isAdditive = true
-            self.add(hoverAnimation, forKey: "hover")
+        guard !UIAccessibility.isReduceMotionEnabled else {
+            self.stopAnimations()
+            return
         }
-        
+        self.starsLayer.isHidden = false
+        let beginTime = CACurrentMediaTime() - Double(index) * 1.5
+        if self.animation(forKey: "hover") == nil {
+            let orbit = CAKeyframeAnimation(keyPath: "position")
+            orbit.path = UIBezierPath(ovalIn: CGRect(x: -7.0, y: -5.0, width: 14.0, height: 10.0)).cgPath
+            orbit.duration = 7.0 + Double(index % 3)
+            orbit.repeatCount = .infinity
+            orbit.calculationMode = .paced
+            orbit.isAdditive = true
+            orbit.beginTime = beginTime
+            self.add(orbit, forKey: "hover")
+        }
+
         if self.animationLayer.animation(forKey: "wiggle") == nil {
             let fromRotationAngle = CGFloat.random(in: 0.025 ..< 0.05)
             let toRotationAngle = CGFloat.random(in: 0.025 ..< 0.05)

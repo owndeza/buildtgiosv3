@@ -1460,7 +1460,11 @@ public final class PeerInfoGiftsPaneNode: ASDisplayNode, PeerInfoPaneNode, UIScr
         self.currentParams = (size, topInset, sideInset, bottomInset, deviceMetrics, visibleHeight, isScrollingLockedAtTop, expandProgress, navigationHeight, presentationData)
         self.presentationDataPromise.set(.single(presentationData))
         
-        self.backgroundNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor
+        if let status = self.peer?.emojiStatus, case .starGift = status.content {
+            self.backgroundNode.backgroundColor = .clear
+        } else {
+            self.backgroundNode.backgroundColor = presentationData.theme.list.blocksBackgroundColor
+        }
         transition.updateFrame(node: self.backgroundNode, frame: CGRect(origin: CGPoint(x: 0.0, y: topInset), size: CGSize(width: size.width, height: size.height - topInset)))
         transition.updateFrame(node: self.scrollNode, frame: CGRect(origin: CGPoint(), size: size))
         

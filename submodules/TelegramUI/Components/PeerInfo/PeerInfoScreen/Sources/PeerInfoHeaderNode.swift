@@ -2475,6 +2475,12 @@ final class PeerInfoHeaderNode: ASDisplayNode {
             containerSize: CGSize(width: width + bannerInset * 2.0, height: apparentBackgroundHeight + bannerInset)
         )
         if let backgroundCoverView = self.backgroundCover.view as? PeerInfoCoverComponent.View {
+            // Gift profiles share one continuous backdrop behind the entire screen.
+            if case .status = backgroundCoverSubject, !self.isSettings, !self.isAvatarExpanded {
+                backgroundCoverView.isHidden = true
+            } else {
+                backgroundCoverView.isHidden = false
+            }
             if backgroundCoverView.superview == nil {
                 self.backgroundBannerView.addSubview(backgroundCoverView)
             }
